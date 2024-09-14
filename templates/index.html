@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Call App</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <script defer src="/static/main.js"></script>
+</head>
+<body>
+    <h1>Video Call</h1>
+    <div>
+        <label for="roomInput">Enter Room ID: </label>
+        <input type="text" id="roomInput" placeholder="Enter room ID to join or create">
+        <button onclick="joinRoom()">Join Room</button>
+    </div>
+    
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
+
+    <script>
+        const socket = io();
+        let localStream;
+        let remoteStream;
+        let peerConnection;
+        let room;
+
+        // ICE Server configuration (STUN)
+        const servers = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+
+        // Get user media (webcam)
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then(stream => {
+                const localVideo = document.getElementById('localVideo');
+                localStream = stream;
+                localVideo.srcObject = stream;
+            })
+            .catch(error => console.error('Error accessing media devices.', error));
+
+        function joinRoom() {
+            room = document.getElementById('roomInput').value;
+            if (!room) {
+                alert("Please enter a room ID");
+                return;
+            }
+
+            // Join the specified room
+            socket.emit('join', { room: room });
+        }
+
+        // Handle when another user joins the room
+        socket.on('user_joined', data => {
+            if (!peerConnection) {
+                createPeerConnection();
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            }
+        });
+
+        // Create PeerConnection
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(servers);
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('signal', {
+                        type: 'ice_candidate',
+                        candidate: event.candidate,
+                        room: room
+                    });
+                }
+            };
+
+            peerConnection.ontrack = event => {
+                const remoteVideo = document.getElementById('remoteVideo');
+                if (!remoteStream) {
+                    remoteStream = new MediaStream();
+                    remoteVideo.srcObject = remoteStream;
+                }
+                remoteStream.addTrack(event.track);
+            };
+        }
+
+        // Handle signaling data (offer/answer/ICE candidates)
+        socket.on('signal', async data => {
+            if (data.type === 'offer') {
+                if (!peerConnection) createPeerConnection();
+
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                socket.emit('signal', {
+                    type: 'answer',
+                    answer: answer,
+                    room: room
+                });
+            } else if (data.type === 'answer') {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+            } else if (data.type === 'ice_candidate') {
+                if (peerConnection) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            }
+        });
+
+        // Send offer when a user joins
+        socket.on('user_joined', async () => {
+            if (peerConnection) {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                socket.emit('signal', {
+                    type: 'offer',
+                    offer: offer,
+                    room: room
+                });
+            }
+        });
+    </script>
+</body>
+</html>
